@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+langchain-core
+langchain-community
+langchain-google-genai
+langchain-text-splitters
+langgraph
+langsmith
+chromadb
+pypdf
+python-dotenvpip
