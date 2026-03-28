@@ -10,15 +10,14 @@ from dotenv import load_dotenv
 
 from app.agent import agent
 
-
 load_dotenv()
 
 
 app = FastAPI(
 
-    title="AlgoRhythm Agent API",
+    title="Informatica Agent API",
 
-    description="A content creator agent powered by LangGraph",
+    description="Personal assistant for business analysts powered by LangGraph",
 
     version="1.0.0"
 
