@@ -9,3 +9,11 @@ langsmith
 chromadb
 pypdf
 python-dotenvpip
+langchain-tavily
+sqlalchemy
+pymysq1
+psycop2-binary
+pandas
+matplotlib
+faker
+chromadb
