@@ -14,47 +14,46 @@ load_dotenv()
 
 
 app = FastAPI(
-
     title="Informatica Agent API",
-
     description="Personal assistant for business analysts powered by LangGraph",
-
     version="1.0.0"
-
 )
 
 
 class ChatRequest(BaseModel):
-
     message: str
 
 
 class ChatResponse(BaseModel):
-
     response: str
 
 
 @app.get("/health")
-
 async def health_check():
-
     return {"status": "ok"}
 
 
 @app.post("/chat", response_model=ChatResponse)
-
 async def chat(request: ChatRequest):
-
     try:
-
         result = agent.invoke({
-
             "messages": [HumanMessage(content=request.message)]
-
         })
 
-        return ChatResponse(response=result["messages"][-1].content)
+        raw = result["messages"][-1].content
+
+        # Gemini can return .content as a list of typed blocks instead of a plain string
+        if isinstance(raw, str):
+            response_text = raw
+        elif isinstance(raw, list):
+            response_text = " ".join(
+                block["text"] for block in raw
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        else:
+            response_text = str(raw)
+
+        return ChatResponse(response=response_text)
 
     except Exception as e:
-
         raise HTTPException(status_code=500, detail=str(e))

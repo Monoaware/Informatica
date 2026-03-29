@@ -2,124 +2,144 @@
 import os
 import re
 import json
-import time
-import random
+import tempfile
 from dotenv import load_dotenv
+from typing import TypedDict, Annotated, Sequence, Literal
 
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from langchain.agents import create_agent
-
 from sqlalchemy import create_engine, inspect, text
+from supabase import create_client
 
 from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_tavily import TavilySearch
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 
+from langchain.agents import create_agent
+
+
 load_dotenv()
 
 
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash",
-    temperature=0, google_api_key=os.environ.get("GOOGLE_API_KEY")
+# ── Supabase client ────────────────────────────────────────────────────────────
+
+supabase = create_client(
+    os.environ.get("SUPABASE_URL"),
+    os.environ.get("SUPABASE_KEY")
 )
 
-TAVILY_API_KEY=os.environ.get("TAVILY_API_KEY")
 
-# Point to document folder:
-DOCS_PATH = r"G:\My Drive\sample_docs"
+# ── LLM ───────────────────────────────────────────────────────────────────────
+
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    temperature=0,
+    google_api_key=os.environ.get("GOOGLE_API_KEY")
+)
 
 
-# Load documents:
-def load_documents(folder_path):
+# ── Docs: download from Supabase Storage → load into Chroma ───────────────────
+
+SUPABASE_DOCS_BUCKET = "sample_docs"
+
+def download_docs_from_supabase(bucket: str) -> str:
+    """Download known .txt files directly from Supabase Storage by name.
+    Bypasses .list() which returns [] for public buckets with the anon key.
+    To add or remove files, update the DOC_FILENAMES list below.
+    """
+    # Update this list if you add/remove files from the bucket:
+    DOC_FILENAMES = [
+        "customer_segments.txt",
+        "marketing_campaigns.txt",
+        "pricing_policy.txt",
+        "qbr_q4.txt",
+        "sales_strategy.txt",
+    ]
+
+    tmp_dir = tempfile.mkdtemp()
+    downloaded = 0
+
+    for filename in DOC_FILENAMES:
+        try:
+            data = supabase.storage.from_(bucket).download(filename)
+            if not isinstance(data, bytes):
+                print(f"  SKIP {filename}: unexpected response type {type(data)}")
+                continue
+            with open(os.path.join(tmp_dir, filename), "wb") as out:
+                out.write(data)
+            downloaded += 1
+            print(f"  Downloaded: {filename} ({len(data)} bytes)")
+        except Exception as e:
+            print(f"  FAILED to download {filename}: {e}")
+
+    if downloaded == 0:
+        raise RuntimeError(
+            f"No files were downloaded from bucket '{bucket}'. "
+            "Check your SUPABASE_KEY and bucket name."
+        )
+
+    print(f"[Supabase Storage] Done — {downloaded}/{len(DOC_FILENAMES)} file(s) saved to {tmp_dir}")
+    return tmp_dir
+def load_documents(folder_path: str):
     documents = []
-
     for filename in os.listdir(folder_path):
+        if not filename.endswith(".txt"):
+            continue
         path = os.path.join(folder_path, filename)
-
-        if filename.endswith(".txt"):
-            loader = TextLoader(path)
-            docs = loader.load()
-
-            # Add source metadata:
-            for d in docs:
-                d.metadata["source"] = filename
-
-            documents.extend(docs)
-
+        loader = TextLoader(path)
+        docs = loader.load()
+        for d in docs:
+            d.metadata["source"] = filename
+        documents.extend(docs)
     return documents
 
+# Download docs at startup:
+DOCS_PATH = download_docs_from_supabase(SUPABASE_DOCS_BUCKET)
 docs = load_documents(DOCS_PATH)
 
 # Split documents:
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=800,
-    chunk_overlap=150
-)
-
+splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
 split_docs = splitter.split_documents(docs)
 
-# Initialize embedding model + generate embeddings:
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/gemini-embedding-001"
-)
-
-# Store documents and embeddings into vector store:
-vector_store = Chroma.from_documents(
-    documents=split_docs,
-    embedding=embeddings
-)
-
-# Create a retriever:
+# Embed and store in Chroma:
+embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
+vector_store = Chroma.from_documents(documents=split_docs, embedding=embeddings)
 retriever = vector_store.as_retriever(search_kwargs={"k": 4})
 
-DB_PATH = r"G:\My Drive\business_agent.db"
-engine = create_engine(f"sqlite:///{DB_PATH}")
 
-# Set a constant for validator + agent to know which type of DB we're querying:
-ACTIVE_SQL_DIALECT = "SQLite"
+# ── Database: Supabase PostgreSQL via SQLAlchemy ───────────────────────────────
+
+# In Supabase: Settings → Database → Connection string → URI (use "Session" mode)
+# Format: postgresql://postgres:[password]@[host]:5432/postgres
+engine = create_engine(os.environ.get("SUPABASE_DB_URL"))
+
+# Updated dialect — Postgres supports RIGHT JOIN, FULL JOIN etc.
+ACTIVE_SQL_DIALECT = "PostgreSQL"
 
 # Set up dialect rules:
 DIALECT_RULES = {
     "sqlite": {
         "forbidden_patterns": [
-            "RIGHT JOIN",
-            "FULL JOIN",
-            "FULL OUTER JOIN",
-            "INSERT",
-            "UPDATE",
-            "DELETE",
-            "DROP",
-            "ALTER",
-            "CREATE",
-            "TRUNCATE",
+            "RIGHT JOIN", "FULL JOIN", "FULL OUTER JOIN",  # unsupported in SQLite
+            "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE",
         ],
         "allow_multiple_statements": False,
     },
-    "postgres": {
+    "postgresql": {
         "forbidden_patterns": [
-            "INSERT",
-            "UPDATE",
-            "DELETE",
-            "DROP",
-            "ALTER",
-            "CREATE",
-            "TRUNCATE",
+            # RIGHT JOIN, FULL JOIN are valid in Postgres — not blocked here
+            "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE",
         ],
         "allow_multiple_statements": False,
     },
     "mysql": {
         "forbidden_patterns": [
-            "INSERT",
-            "UPDATE",
-            "DELETE",
-            "DROP",
-            "ALTER",
-            "CREATE",
-            "TRUNCATE",
+            "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE",
         ],
         "allow_multiple_statements": False,
     },
@@ -466,7 +486,15 @@ agent = create_agent(
 
 # ── Usage ──────────────────────────────────────────────────────────────────────
 #
-# result = app.invoke({
-#     "messages": [HumanMessage(content="What were total sales last month?")]
-# })
+# Required .env variables:
+#   SUPABASE_URL       = https://your-project.supabase.co
+#   SUPABASE_KEY       = your anon/service role key
+#   SUPABASE_DB_URL    = postgresql://postgres:password@[host]:6543/postgres
+#   GOOGLE_API_KEY     = your Gemini API key
+#   TAVILY_API_KEY     = your Tavily API key
+#
+# result = app.invoke(
+#     {"messages": [HumanMessage(content="What were total sales last month?")]},
+#     config={"recursion_limit": 10}
+# )
 # print(result["messages"][-1].content)

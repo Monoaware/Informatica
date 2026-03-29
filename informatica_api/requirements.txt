@@ -17,3 +17,5 @@ pandas
 matplotlib
 faker
 chromadb
+supabase
+psycopg2-binary
