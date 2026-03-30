@@ -11,11 +11,9 @@ pypdf
 python-dotenv
 langchain-tavily
 sqlalchemy
-pymysq1
-psycop2-binary
+pymysql
+psycopg2-binary
 pandas
 matplotlib
 faker
-chromadb
 supabase
-psycopg2-binary
