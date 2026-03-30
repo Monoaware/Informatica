@@ -8,7 +8,7 @@ langgraph
 langsmith
 chromadb
 pypdf
-python-dotenvpip
+python-dotenv
 langchain-tavily
 sqlalchemy
 pymysq1
