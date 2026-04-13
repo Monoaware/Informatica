@@ -19,6 +19,28 @@ app = FastAPI(
     version="1.0.0"
 )
 
+## add cors
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+## serve HTML (static serving)
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/")
+async def serve_ui():
+    return FileResponse("static/index.html")
+
 
 class ChatRequest(BaseModel):
     message: str
