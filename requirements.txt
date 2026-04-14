@@ -17,3 +17,4 @@ pandas
 matplotlib
 faker
 supabase
+python-multipart
