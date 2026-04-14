@@ -100,6 +100,7 @@ header {
   border-radius: 14px;
   line-height: 1.6;
   font-size: 14px;
+  white-space: pre-wrap;
 }
 
 .user .bubble {
@@ -113,6 +114,23 @@ header {
   background: var(--panel);
   border: 1px solid rgba(255,255,255,0.06);
   border-bottom-left-radius: 4px;
+}
+
+.agent .bubble h3 {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 10px 0 6px;
+}
+
+.agent .bubble h3:first-child {
+  margin-top: 0;
+}
+
+.agent .bubble ul {
+  margin: 0 0 0 18px;
+  padding: 0;
 }
 
 /* EMPTY */
@@ -166,6 +184,47 @@ button:hover {
   transform: scale(1.05);
 }
 
+/* UPLOAD */
+.upload-panel {
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(18, 26, 43, 0.6);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+
+.upload-title {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.upload-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.upload-row input[type="file"] {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.upload-row button {
+  width: auto;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: #000;
+  font-weight: 600;
+}
+
+.upload-status {
+  font-size: 12px;
+  color: var(--muted);
+}
 </style>
 </head>
 
@@ -188,6 +247,16 @@ button:hover {
 </div>
 
 <div class="input-area">
+  <!-- Upload panel -->
+  <div class="upload-panel">
+    <div class="upload-title">Upload a document (PDF/TXT)</div>
+    <div class="upload-row">
+      <input id="fileInput" type="file" accept=".pdf,.txt,application/pdf,text/plain" />
+      <button id="uploadBtn" type="button">Upload</button>
+      <span id="uploadStatus" class="upload-status"></span>
+    </div>
+  </div>
+
   <div class="input-row">
     <textarea id="input" placeholder="What were total sales last month?"></textarea>
     <button onclick="send()">➤</button>
@@ -201,7 +270,59 @@ const messages = document.getElementById("messages");
 const input = document.getElementById("input");
 const empty = document.getElementById("empty");
 
-function addMessage(role, text) {
+// Upload UI
+const fileInput = document.getElementById("fileInput");
+const uploadBtn = document.getElementById("uploadBtn");
+const uploadStatus = document.getElementById("uploadStatus");
+
+async function uploadFile() {
+  const file = fileInput?.files?.[0];
+  if (!file) {
+    uploadStatus.textContent = "Choose a file first.";
+    return;
+  }
+
+  uploadStatus.textContent = "Uploading...";
+  uploadBtn.disabled = true;
+
+  try {
+    const form = new FormData();
+    form.append("file", file);
+
+    const res = await fetch("/upload", {
+      method: "POST",
+      body: form,
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = (data && data.detail) ? data.detail : `Upload failed (HTTP ${res.status})`;
+      throw new Error(msg);
+    }
+
+    uploadStatus.textContent = `Uploaded: ${data.filename || file.name}`;
+    fileInput.value = "";
+
+    // Add a small agent message confirming upload
+    addMessage("agent", {
+      render_mode: "plain",
+      plain_text: `Upload complete: ${data.filename || file.name}. It is now indexed and searchable.`,
+      direct_answer: `Upload complete: ${data.filename || file.name}. It is now indexed and searchable.`,
+      supporting_evidence: [],
+      business_implication: "",
+      recommended_next_step: [],
+      raw_model_text: null
+    });
+  } catch (err) {
+    uploadStatus.textContent = `Error: ${err?.message || String(err)}`;
+  } finally {
+    uploadBtn.disabled = false;
+  }
+}
+
+uploadBtn?.addEventListener("click", uploadFile);
+
+function addMessage(role, content) {
   if (empty) empty.remove();
 
   const div = document.createElement("div");
@@ -213,12 +334,51 @@ function addMessage(role, text) {
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  bubble.textContent = text;
+
+  if (role === "agent" && typeof content === "object" && content !== null) {
+    // Deterministic render mode from backend
+    const renderMode = (content.render_mode ?? "structured").toString();
+
+    if (renderMode === "plain") {
+      const plain = (content.plain_text ?? content.direct_answer ?? content.raw_model_text ?? "").toString().trim();
+      bubble.textContent = plain || "(empty response)";
+      // ...done
+    } else {
+      const direct = (content.direct_answer ?? "").toString().trim();
+      const evidence = Array.isArray(content.supporting_evidence) ? content.supporting_evidence : [];
+      const implication = (content.business_implication ?? "").toString().trim();
+      const nextSteps = Array.isArray(content.recommended_next_step) ? content.recommended_next_step : [];
+
+      const parts = [];
+      parts.push(`<h3>Direct answer</h3><div>${escapeHtml(direct) || "(none)"}</div>`);
+
+      parts.push(`<h3>Supporting evidence</h3>` +
+        (evidence.length ? `<ul>${evidence.map(x => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>` : `<div>(none)</div>`));
+
+      parts.push(`<h3>Business implication</h3><div>${escapeHtml(implication) || "(none)"}</div>`);
+
+      parts.push(`<h3>Recommended next step</h3>` +
+        (nextSteps.length ? `<ul>${nextSteps.map(x => `<li>${escapeHtml(String(x))}</li>`).join("")}</ul>` : `<div>(none)</div>`));
+
+      bubble.innerHTML = parts.join("\n");
+    }
+  } else {
+    bubble.textContent = String(content ?? "");
+  }
 
   div.appendChild(label);
   div.appendChild(bubble);
   messages.appendChild(div);
   messages.scrollTop = messages.scrollHeight;
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 async function send() {
@@ -235,8 +395,23 @@ async function send() {
   });
 
   const data = await res.json();
-  addMessage("agent", data.response);
+
+  // Back-compat: if server returns {response: "..."}, render that.
+  // Otherwise, render the structured fields.
+  if (data && typeof data === "object" && typeof data.response === "string") {
+    addMessage("agent", data.response || "(empty response)");
+  } else {
+    addMessage("agent", data);
+  }
 }
+
+// Enter sends; Shift+Enter inserts a newline
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
 </script>
 
 </body>
