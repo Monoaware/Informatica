@@ -1,1 +1,6 @@
 .env
+chroma_store/
+Chinook_PostgreSql.sql
+Holiday Campaign Notice.txt
+__pycache__/
+venv311/
